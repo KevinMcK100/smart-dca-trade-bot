@@ -1,0 +1,58 @@
+{
+  "Comment": "A state machine for daily balance checks",
+  "StartAt": "ScheduledBalanceChecker",
+  "States": {
+    "ScheduledBalanceChecker": {
+      "Type": "Task",
+      "Resource": "${ScheduledBalanceCheckerFunctionArn}",
+      "Next": "BalanceCheckLoop"
+    },
+    "BalanceCheckLoop": {
+      "Type": "Map",
+      "InputPath": "$",
+      "ItemsPath": "$",
+      "MaxConcurrency": 1,
+      "Iterator": {
+        "StartAt": "CheckAccountBalance",
+        "States": {
+          "CheckAccountBalance": {
+            "Type": "Task",
+            "Resource": "${CheckAccountBalanceFunctionArn}",
+            "Next": "BalanceCheck",
+            "ResultPath": "$.state",
+            "Parameters": {
+              "state.$": "$.state"
+            }
+          },
+          "BalanceCheck": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Variable": "$.state.accountBalance",
+                "NumericGreaterThanPath": "$.state.originalRequest.quoteAmount",
+                "Next": "SufficientFunds"
+              }
+            ],
+            "Default": "NotifyInsufficientFunds"
+          },
+          "SufficientFunds": {
+            "Type": "Pass",
+            "Result": "Sufficient funds - no action needed",
+            "End": true
+          },
+          "NotifyInsufficientFunds": {
+            "Type": "Task",
+            "Resource": "${NotificationFunctionArn}",
+            "Parameters": {
+              "emailSubject.$": "States.Format('Insufficient {} Funds On Exchange', $.state.originalRequest.quoteCurrency)",
+              "emailBody.$": "States.Format('Exchange currently has {} {} available to trade which is below the required threshold of {} {} to allow future Smart DCA trades to be executed. Please top up {} balance on exchange ASAP', $.state.accountBalance, $.state.originalRequest.quoteCurrency, $.state.originalRequest.quoteAmount, $.state.originalRequest.quoteCurrency, $.state.originalRequest.quoteCurrency)",
+              "state.$": "$.state"
+            },
+            "End": true
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}

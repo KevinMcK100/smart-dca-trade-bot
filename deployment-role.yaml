@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IAM Role for SAM Deployment
+
+Resources:
+  DeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SAMDeploymentRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "cloudformation:*"
+                  - "lambda:*"
+                  - "apigateway:*"
+                  - "iam:*"
+                  - "ssm:*"
+                  - "states:*"
+                  - "events:*"
+                  - "s3:*"
+                  - "logs:*"
+                Resource: "*"
+
+Outputs:
+  DeploymentRoleArn:
+    Description: The ARN of the IAM role created for SAM deployments
+    Value: !GetAtt DeploymentRole.Arn

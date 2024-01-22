@@ -1,0 +1,100 @@
+swagger: '2.0'
+info:
+  description: 'API to automate placement of Smart DCA trades from TradingView'
+  version: '1.0.0'
+  title: Smart DCA Trading Bot API
+
+schemes:
+  - https
+
+securityDefinitions:
+  APIKeyQueryParam:
+    type: apiKey
+    in: query
+    name: api_key
+
+paths:
+  /trade:
+    post:
+      summary: Open Trade
+      description: Opens a new trade on exchange
+      consumes:
+        - application/json
+      produces:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: Trading request payload
+          required: true
+          schema:
+            type: object
+            required:
+              - baseCurrency
+              - quoteCurrency
+              - quoteAmount
+            properties:
+              baseCurrency:
+                type: string
+                description: Base currency of trading pair. This is the asset you want to buy/sell.
+              quoteCurrency:
+                type: string
+                description: Quote currency of trading pair. This is the fiat/stable coin asset you want to use for the trade.
+              quoteAmount:
+                type: number
+                description: Amount of baseCurrency you would like ot buy/sell denoted in the quoteCurrency.
+            example:
+              baseCurrency:
+                value: BTC
+                summary: The base asset you want to buy or sell.
+              quoteCurrency:
+                value: USDT
+                summary: The asset you will use to buy with or sell to.
+              quoteAmount:
+                value: 100
+                summary: The amount to buy or sell as value of quote currency. 100 USDT would buy $100 worth of BTC
+      responses:
+        200:
+          description: OK
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                description: Response message.
+        400:
+          description: Bad request
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                description: Error message.
+        500:
+          description: Internal server error
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                description: Error message.
+
+      x-amazon-apigateway-integration:
+        uri:
+          Fn::Sub: 'arn:aws:apigateway:${AWS::Region}:states:action/StartExecution'
+        credentials:
+          Fn::GetAtt: [TradingApiRole, Arn]
+        requestTemplates:
+          application/json:
+            Fn::Sub: |
+              {
+                "stateMachineArn": "${TradeExecutorStateMachine.Arn}",
+                "input": "$util.escapeJavaScript($input.json('$'))"
+              }
+        responses:
+          default:
+            statusCode: 200
+        passthroughBehavior: when_no_match
+        httpMethod: POST
+        type: aws
+

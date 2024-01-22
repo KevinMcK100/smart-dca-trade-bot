@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Trading bot designed to take requests from TradingView and place orders on exchange
+
+Parameters:
+  IPWhitelist:
+    Type: AWS::SSM::Parameter::Value<CommaDelimitedList>
+    Default: /SmartDcaTradeBot/Live/Authentication/whitelistIPs
+
+Resources:
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: smart_dca_trade_bot/dependencies_layer/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.11
+
+  # -----------------------------------------------
+  # ---------------- TRADE EXECUTOR ---------------
+  # -----------------------------------------------
+
+  # --------------- LAMBDA FUNCTIONS --------------
+
+  RequestAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions.authorizer.lambda_handler
+      Runtime: python3.11
+      CodeUri: smart_dca_trade_bot/
+      Layers:
+        - !Ref DependenciesLayer
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action: "ssm:GetParameter"
+              Resource:
+                Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SmartDcaTradeBot/Live/Authentication/apiKey
+  RequestAuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${RequestAuthorizerFunction}'
+      RetentionInDays: 30
+
+  RequestValidatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions.request_validator.lambda_handler
+      Runtime: python3.11
+      CodeUri: smart_dca_trade_bot/
+      Layers:
+        - !Ref DependenciesLayer
+  RequestValidatorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${RequestValidatorFunction}'
+      RetentionInDays: 30
+
+  CheckAccountBalanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions.check_account_balance.lambda_handler
+      Runtime: python3.11
+      CodeUri: smart_dca_trade_bot/
+      Timeout: 30
+      Layers:
+        - !Ref DependenciesLayer
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action: "ssm:GetParameter"
+              Resource:
+                Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SmartDcaTradeBot/*/KrakenAuthentication/*
+  CheckAccountBalanceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CheckAccountBalanceFunction}'
+      RetentionInDays: 30
+
+  TradeExecutionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions.trade_executor.lambda_handler
+      Runtime: python3.11
+      CodeUri: smart_dca_trade_bot/
+      Timeout: 30
+      Layers:
+        - !Ref DependenciesLayer
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action: "ssm:GetParameter"
+              Resource:
+                Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SmartDcaTradeBot/*/KrakenAuthentication/*
+  TradeExecutionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${TradeExecutionFunction}'
+      RetentionInDays: 30
+
+  NotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions.notification.lambda_handler
+      Runtime: python3.11
+      CodeUri: smart_dca_trade_bot/
+      Layers:
+        - !Ref DependenciesLayer
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action: "ssm:GetParameter"
+              Resource:
+                Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SmartDcaTradeBot/Live/Notifications/*
+            - Effect: "Allow"
+              Action:
+                - "ses:SendEmail"
+                - "ses:SendRawEmail"
+              Resource:
+                Fn::Sub: arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+  NotificationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${NotificationFunction}'
+      RetentionInDays: 30
+
+  # --------------- API GATEWAY --------------
+
+  TradingApiRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: TradingApiRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess
+      Policies:
+        - PolicyName: InvokeStepFunctionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !GetAtt TradeExecutorStateMachine.Arn
+  TradingApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      OpenApiVersion: '2.0'
+      Auth:
+        ResourcePolicy:
+          IpRangeWhitelist: !Ref IPWhitelist  # Includes 4 TradingView IPs plus and personal IPs for executing test requests
+        DefaultAuthorizer: TradingAuthorizerFunc
+        Authorizers:
+          TradingAuthorizerFunc:
+            FunctionPayloadType: REQUEST
+            FunctionArn:
+              Fn::GetAtt:
+                - RequestAuthorizerFunction
+                - Arn
+            Identity:
+              QueryStrings:
+                - api_key
+      DefinitionBody:
+        'Fn::Transform':
+          Name: 'AWS::Include'
+          Parameters:
+            Location: "swagger.yaml"
+
+  # --------------- STATE MACHINE --------------
+
+  TradeExecutorStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "TradeExecutorStateMachineRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "states.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "StateMachineExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource:
+                  - !GetAtt RequestValidatorFunction.Arn
+                  - !GetAtt CheckAccountBalanceFunction.Arn
+                  - !GetAtt TradeExecutionFunction.Arn
+                  - !GetAtt NotificationFunction.Arn
+  TradeExecutorStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: smart_dca_trade_bot/statemachines/trade_executor_state_machine.asl.json
+      Role: !GetAtt TradeExecutorStateMachineRole.Arn
+      DefinitionSubstitutions:
+        RequestValidatorFunctionArn: !GetAtt RequestValidatorFunction.Arn
+        CheckAccountBalanceFunctionArn: !GetAtt CheckAccountBalanceFunction.Arn
+        TradeExecutionFunctionArn: !GetAtt TradeExecutionFunction.Arn
+        NotificationFunctionArn: !GetAtt NotificationFunction.Arn
+
+# -----------------------------------------------
+# ---------- SCHEDULED BALANCE CHECKER ----------
+# -----------------------------------------------
+
+  # --------------- LAMBDA FUNCTIONS --------------
+
+  ScheduledBalanceCheckerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: functions.scheduled_balance_checker.lambda_handler
+      Runtime: python3.11
+      CodeUri: smart_dca_trade_bot/
+      Layers:
+        - !Ref DependenciesLayer
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action: "ssm:GetParameter"
+              Resource:
+                Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/SmartDcaTradeBot/Live/ScheduledBalanceChecker/input
+  ScheduledBalanceCheckerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ScheduledBalanceCheckerFunction}'
+      RetentionInDays: 30
+
+  # --------------- STATE MACHINE --------------
+
+  BalanceCheckStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "BalanceCheckStateMachineRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "states.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "BalanceCheckStateMachineExecutionPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "lambda:InvokeFunction"
+                Resource:
+                  - !GetAtt ScheduledBalanceCheckerFunction.Arn
+                  - !GetAtt CheckAccountBalanceFunction.Arn
+                  - !GetAtt NotificationFunction.Arn
+  BalanceCheckStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: smart_dca_trade_bot/statemachines/balance_check_state_machine.asl.json
+      Role: !GetAtt BalanceCheckStateMachineRole.Arn
+      DefinitionSubstitutions:
+        ScheduledBalanceCheckerFunctionArn: !GetAtt ScheduledBalanceCheckerFunction.Arn
+        CheckAccountBalanceFunctionArn: !GetAtt CheckAccountBalanceFunction.Arn
+        NotificationFunctionArn: !GetAtt NotificationFunction.Arn
+  ScheduledBalanceCheckRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "events.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "ScheduledBalanceCheckPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "states:StartExecution"
+                Resource:
+                  - !GetAtt BalanceCheckStateMachine.Arn
+
+  # --------------- SCHEDULER RULES --------------
+
+  ScheduledBalanceCheckRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 9,15,21,3 * * ? *)"  # Every 6 hours (3, 9, 15, 21)
+      Targets:
+        - Arn: !Ref BalanceCheckStateMachine
+          Id: "ScheduledBalanceCheck"
+          RoleArn: !GetAtt ScheduledBalanceCheckRole.Arn

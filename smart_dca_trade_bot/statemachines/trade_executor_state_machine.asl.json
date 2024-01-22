@@ -1,0 +1,109 @@
+{
+  "Comment": "A state machine for placing Smart DCA trades on an exchange.",
+  "StartAt": "RequestValidatorFunction",
+  "States": {
+    "RequestValidatorFunction": {
+      "Type": "Task",
+      "Resource": "${RequestValidatorFunctionArn}",
+      "Next": "IsRequestValid",
+      "ResultPath": "$.state",
+      "Catch": [
+        {
+          "ErrorEquals": ["InvalidRequestError"],
+          "Next": "NotifyInvalidRequest"
+        }
+      ]
+    },
+    "IsRequestValid": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.state.isValid",
+          "BooleanEquals": true,
+          "Next": "CheckAccountBalanceFunction"
+        }
+      ],
+      "Default": "NotifyInvalidRequest"
+    },
+    "NotifyInvalidRequest": {
+      "Type": "Task",
+      "Resource": "${NotificationFunctionArn}",
+      "Parameters": {
+        "state.$": "$.state",
+        "message": "Invalid request"
+      },
+      "End": true
+    },
+    "CheckAccountBalanceFunction": {
+      "Type": "Task",
+      "Resource": "${CheckAccountBalanceFunctionArn}",
+      "Next": "HasSufficientFunds",
+      "ResultPath": "$.state",
+      "Parameters": {
+        "state.$": "$.state"
+      }
+    },
+    "HasSufficientFunds": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.state.accountBalance",
+          "NumericGreaterThanPath": "$.state.originalRequest.quoteAmount",
+          "Next": "TradeExecutionFunction"
+        }
+      ],
+      "Default": "NotifyInsufficientFunds"
+    },
+    "NotifyInsufficientFunds": {
+      "Type": "Task",
+      "Resource": "${NotificationFunctionArn}",
+      "Parameters": {
+        "emailSubject.$": "States.Format('{} Trade Failed Due To Insufficient {} Funds', $.state.originalRequest.baseCurrency, $.state.originalRequest.quoteCurrency)",
+        "emailBody.$": "States.Format('Attempt to place trade on {} for an amount of {} {} failed because there was insufficient {} funds to complete the transaction. Please top up {} balance on the exchange ASAP', $.state.originalRequest.baseCurrency, $.state.originalRequest.quoteAmount, $.state.originalRequest.quoteCurrency, $.state.originalRequest.quoteCurrency, $.state.originalRequest.quoteCurrency)",
+        "state.$": "$.state"
+      },
+      "End": true
+    },
+    "TradeExecutionFunction": {
+      "Type": "Task",
+      "Resource": "${TradeExecutionFunctionArn}",
+      "Next": "IsTradeSuccessful",
+      "ResultPath": "$.state",
+      "Parameters": {
+        "state.$": "$.state"
+      }
+    },
+    "IsTradeSuccessful": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.state.tradeStatus",
+          "StringEquals": "success",
+          "Next": "NotifyTradeSuccess"
+        }
+      ],
+      "Default": "NotifyTradeFailure"
+    },
+    "NotifyTradeSuccess": {
+      "Type": "Task",
+      "Resource": "${NotificationFunctionArn}",
+      "Parameters": {
+        "emailSubject.$": "States.Format('{} Trade Successfully Executed', $.state.originalRequest.baseCurrency)",
+        "emailBody.$": "States.Format('Successfully placed a trade on {} for an amount of {} {}', $.state.originalRequest.baseCurrency, $.state.originalRequest.quoteAmount, $.state.originalRequest.quoteCurrency)",
+        "state.$": "$.state"
+      },
+      "End": true
+    },
+    "NotifyTradeFailure": {
+      "Type": "Task",
+      "Resource": "${NotificationFunctionArn}",
+      "Parameters": {
+        "emailSubject.$": "States.Format('{} Trade Execution Failed', $.state.originalRequest.baseCurrency)",
+        "emailBody.$": "States.Format('Exception occurred when attempting to place an order on {} for an amount of {} {}', $.state.originalRequest.baseCurrency, $.state.originalRequest.quoteAmount, $.state.originalRequest.quoteCurrency)",
+        "additionalInfo.$": "$.state.exception",
+        "state.$": "$.state"
+      },
+      "End": true
+    }
+  }
+}
