@@ -97,3 +97,37 @@ So currently when running in testnet mode it will be placing trades on the Krake
 To enable execution of trades against the testnet exchange, set the value of `isTestnet` to `true` in the trade request.
 
 For instructions on how to create a demo account on Kraken Futures, visit [this page](https://support.kraken.com/hc/en-us/articles/360026192132-Futures-Demo-Test-accounts)
+
+## Project Structure
+
+```bash
+├── README.md
+├── deploy.sh
+├── deployment-role.yaml
+├── img
+│   ├── execute-trade-state-machine.png
+│   └── scheduled-balance-checker-state-machine.png
+├── samconfig.toml
+├── smart_dca_trade_bot
+│   ├── __init__.py
+│   ├── dependencies_layer
+│   │   └── requirements.txt
+│   ├── functions
+│   │   ├── __init__.py
+│   │   ├── authorizer.py
+│   │   ├── check_account_balance.py
+│   │   ├── notification.py
+│   │   ├── request_validator.py
+│   │   ├── scheduled_balance_checker.py
+│   │   └── trade_executor.py
+│   ├── statemachines
+│   │   ├── balance_check_state_machine.asl.json
+│   │   └── trade_executor_state_machine.asl.json
+│   └── utils
+│       ├── __init__.py
+│       ├── aws_utils.py
+│       └── exchanges.py
+├── swagger.yaml
+└── template.yaml
+
+```
